@@ -142,6 +142,7 @@ control SwitchIngress(inout header_t hdr, inout metadata_t ig_md,
 
   table resub {
     key = {
+      hdr.ipv4.dst_addr : exact @name("dst_addr");
       ig_intr_md.ingress_port : exact @name("port");
       ig_md.port_metadata.f1  : exact @name("f1");
       ig_md.port_metadata.f2  : exact @name("f2");
