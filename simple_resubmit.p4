@@ -55,12 +55,8 @@ struct metadata_t {
 parser SwitchIngressParser(packet_in pkt, out header_t hdr, out metadata_t ig_md,
                     out ingress_intrinsic_metadata_t ig_intr_md) {
 
-  /*TofinoIngressParser() tofino_parser;*/
-
   state start {
     pkt.extract(ig_intr_md);
-    /*tofino_parser.apply(pkt, ig_intr_md);*/
-    /*transition parse_ethernet;*/
     transition select(ig_intr_md.resubmit_flag) {
       0 : parse_init;
       1 : parse_resubmit;
@@ -163,7 +159,7 @@ control SwitchIngress(inout header_t hdr, inout metadata_t ig_md,
 
   table pass_two {
     key = {
-      ig_md.resubmit_md.value : exact;
+      ig_md.resubmit_md.value : exact @name("value");
     }
     actions = {
       okay;
@@ -171,37 +167,8 @@ control SwitchIngress(inout header_t hdr, inout metadata_t ig_md,
     size = 256;
   }
 
-  action hit(PortId_t port) {
-    ig_intr_tm_md.ucast_egress_port = port;
-    ig_intr_dprsr_md.drop_ctl = 0x0;
-  }
-
-  action route(PortId_t dst_port) {
-    ig_intr_tm_md.ucast_egress_port = dst_port;
-    ig_intr_dprsr_md.drop_ctl = 0x0;
-  }
-
-  action miss() {
-    ig_intr_dprsr_md.drop_ctl = 0x1; // Drop packet
-  }
-
-  table forward {
-    key = { 
-      hdr.ipv4.dst_addr : exact;
-    }
-    actions = { 
-      route;
-    }
-
-    size = 1024;
-  }
-
-
   apply { 
     if (ig_intr_md.resubmit_flag == 0) {
-      // Resubmit packet
-      /*hdr.ethernet.dst_addr = 1;*/
-      /*hdr.ethernet.src_addr = 0;*/
       resub.apply();
     } else {
       pass_two.apply();
@@ -209,7 +176,6 @@ control SwitchIngress(inout header_t hdr, inout metadata_t ig_md,
 
     ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
     ig_intr_tm_md.bypass_egress = 1w1;
-    /*forward.apply();*/
   }
 }
 
