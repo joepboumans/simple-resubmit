@@ -31,29 +31,22 @@
 #define WATERFALL_WIDTH 16
 #define WATERFALL_BIT_WIDTH 4 // 2^WATERFALL_BIT_WIDTH = WATERFALL_WIDTH
 
-const bit<8> RESUB_TYPE_A = 255;
-const bit<3> DPRSR_DIGEST_TYPE_A = 5;
+const bit<8> RESUB_TYPE = 1;
+const bit<3> DPSRS_RESUBMIT_TYPE = 1;
 
-header resubmit_type_a {
+header resubmit_md_t {
   bit<8> type;
-  bit<8> f1;
-  bit<16> f2;
-  bit<32> f3;
+  bit<56> value;
 }
 
-header port_metadata {
+struct port_metadata_t {
   bit<32> f1;
   bit<32> f2;
 }
 
 struct metadata_t {
-  port_metadata port_md;
-  bit<8> resub_type;
-  resubmit_type_a a;
-  bit<WATERFALL_BIT_WIDTH> idx1;
-  bit<WATERFALL_BIT_WIDTH> idx2;
-  bit<32> in_src_addr;
-  bool found;
+  port_metadata_t port_metadata;
+  resubmit_md_t resubmit_md;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +55,7 @@ struct metadata_t {
 parser SwitchIngressParser(packet_in pkt, out header_t hdr, out metadata_t ig_md,
                     out ingress_intrinsic_metadata_t ig_intr_md) {
 
-  TofinoIngressParser() tofino_parser;
+  /*TofinoIngressParser() tofino_parser;*/
 
   state start {
     pkt.extract(ig_intr_md);
@@ -75,19 +68,12 @@ parser SwitchIngressParser(packet_in pkt, out header_t hdr, out metadata_t ig_md
   }
 
   state parse_init {
-    ig_md.port_md = port_metadata_unpack<port_metadata>(pkt);
+    ig_md.port_metadata = port_metadata_unpack<port_metadata_t>(pkt);
     transition parse_ethernet;
   }
 
   state parse_resubmit {
-    ig_md.resub_type = pkt.lookahead<bit<8>>()[7:0];
-    transition select(ig_md.resub_type) {
-      RESUB_TYPE_A : parse_resub_a;
-    }
-  }
-
-  state parse_resub_a {
-    pkt.extract(ig_md.a);
+    pkt.extract(ig_md.resubmit_md);
     transition parse_ethernet;
   }
 
@@ -132,8 +118,8 @@ control SwitchIngressDeparser( packet_out pkt, inout header_t hdr, in metadata_t
   Resubmit() resubmit;
 
   apply {
-    if (ig_intr_dprsr_md.resubmit_type == DPRSR_DIGEST_TYPE_A) {
-      resubmit.emit(ig_md);
+    if (ig_intr_dprsr_md.resubmit_type == DPSRS_RESUBMIT_TYPE) {
+      resubmit.emit(ig_md.resubmit_md);
     }
     pkt.emit(hdr);
   }
@@ -145,15 +131,44 @@ control SwitchIngress(inout header_t hdr, inout metadata_t ig_md,
               inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md,
               inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
 
-  
-  Hash<bit<WATERFALL_BIT_WIDTH>>(HashAlgorithm_t.CRC16) hash1;
+  Counter<bit<1>, bit<2>>(4, CounterType_t.PACKETS) cntr;
 
-  action get_hash1() {
-    ig_md.idx1 = hash1.get({hdr.ipv4.src_addr, 
-                            hdr.ipv4.dst_addr, 
-                            hdr.udp.src_port, 
-                            hdr.udp.dst_port,
-                            hdr.ipv4.protocol});
+  action resubmit_hdr(bit<56> val) {
+    ig_md.resubmit_md.type = RESUB_TYPE;
+    ig_md.resubmit_md.value = val;
+    ig_intr_dprsr_md.resubmit_type = DPSRS_RESUBMIT_TYPE;
+
+    cntr.count(0);
+  }
+
+  action no_resub() { }
+  action drop() { ig_intr_dprsr_md.drop_ctl = 1; }
+
+  table resub {
+    key = {
+      ig_intr_md.ingress_port : exact @name("port");
+      ig_md.port_metadata.f1  : exact @name("f1");
+      ig_md.port_metadata.f2  : exact @name("f2");
+    }
+    actions = {
+      resubmit_hdr;
+      no_resub;
+      drop;
+    }
+    default_action = drop;
+    size = 256;
+  }
+
+  action okay() { cntr.count(1); }
+
+  table pass_two {
+    key = {
+      ig_md.resubmit_md.value : exact;
+    }
+    actions = {
+      okay;
+    }
+    size = 256;
   }
 
   action hit(PortId_t port) {
@@ -169,30 +184,32 @@ control SwitchIngress(inout header_t hdr, inout metadata_t ig_md,
   action miss() {
     ig_intr_dprsr_md.drop_ctl = 0x1; // Drop packet
   }
+
   table forward {
     key = { 
       hdr.ipv4.dst_addr : exact;
-  }
-  actions = { 
-    route;
-  }
+    }
+    actions = { 
+      route;
+    }
 
-  size = 1024;
- }
+    size = 1024;
+  }
 
 
   apply { 
     if (ig_intr_md.resubmit_flag == 0) {
-      get_hash1();
       // Resubmit packet
-      hdr.ethernet.dst_addr = 1;
-      hdr.ethernet.src_addr = 0;
+      /*hdr.ethernet.dst_addr = 1;*/
+      /*hdr.ethernet.src_addr = 0;*/
+      resub.apply();
     } else {
+      pass_two.apply();
     }
 
     ig_intr_tm_md.ucast_egress_port = ig_intr_md.ingress_port;
     ig_intr_tm_md.bypass_egress = 1w1;
-    forward.apply();
+    /*forward.apply();*/
   }
 }
 
